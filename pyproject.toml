@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools >= 61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "compton"
+version = "0.1.0"
+dependencies = [
+  "numpy",
+  "scipy",
+]
+requires-python = ">=3.9"
+authors = [
+  {name = "Maksim Valialshchikov", email = "maksim.valialshchikov@uni-jena.de"},
+]
+maintainers = [
+]
+description = "Calculate classic Compton scattering spectrum"
+readme = "README.md"
+license = {file = "LICENSE"}
+keywords = ["compton", "scattering", "electrodynamics"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python"
+]
+
+[project.optional-dependencies]
+
+
+[project.urls]
+Repository = "https://github.com/maxbalrog/compton-classic"
