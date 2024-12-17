@@ -350,28 +350,12 @@ class SpectrumOAM:
     u - vector part of 4-velocity (u_x, u_y, u_z)
     r - coordinates (x, y, z)
     '''
-    def __init__(self, eta, u, r):
+    def __init__(self, eta, u, r, a0, delta):
         self.eta = eta
         self.u = u
         self.r = r
-
-    def create_traj(self, get_A, Traj, n_eta, eta0=None):
-        #create the mesh over \eta
-        tau = Field.tau
-        if eta0 is None:
-            if Field.envelope_type == 'super gauss':
-                eta0 = int(tau * 1.2)
-            elif Field.envelope_type == 'rectangle':
-                eta0 = int(tau * 1.5)
-        n_eta = int(2 * eta0 * n_eta)
-        eta = np.linspace(-eta0, eta0, n_eta)
-
-        eta_b = 1.*tau
-        eta = np.linspace(-eta_b, eta_b, int(2*eta_b*100))
-        A = calc_A(eta)
-        u, r = traj.calc_u_x(A, eta)
-
-        return u, r, eta
+        self.a0 = a0
+        self.delta = delta
 
     def spec_I_w_theta(self, n_t=100, n_padded=10, 
                     n_theta=250, theta_start=0.,
@@ -425,15 +409,30 @@ class SpectrumOAM:
                     I_2D[i,j,:] = I_interp(w_plot)
             
             return I_2D, w_plot, theta_grid, phi_grid, A_2D
+    
+    def phase(self, eta, x, y, z, w, theta, fi):
+        n_eta = eta.shape[0]
+        if type(w) is np.ndarray:
+            n_w = w.shape[0]
+            eta_ = eta.reshape((1,n_eta))
+            x_ = x.reshape((1,n_eta))
+            y_ = y.reshape((1,n_eta))
+            z_ = z.reshape((1,n_eta))
+            w_ = w.reshape((n_w,1))
+            res = w_ * (eta_ + z_ - x_*np.sin(theta)*np.cos(fi) - y_*np.sin(theta)*np.sin(fi) - z_*np.cos(theta))
+        else:
+            res = w * (eta + z - x*np.sin(theta)*np.cos(fi) - y*np.sin(theta)*np.sin(fi) - z*np.cos(theta))
+        return res
+    
+    def spec_harm(self, w, theta, phi):
+        eta = self.eta
+        u_x_points = self.u[0]
+        u_y_points = self.u[1]
+        u_z_points = self.u[2]
         
-    def spec_harm(self, u_r, eta, w, theta, phi):
-        u_x_points = u_r[:,1]
-        u_y_points = u_r[:,2]
-        u_z_points = u_r[:,3]
-        
-        x_points = u_r[:,4]
-        y_points = u_r[:,5]
-        z_points = u_r[:,6]
+        x_points = self.r[0]
+        y_points = self.r[1]
+        z_points = self.r[2]
 
         d_eta = eta[1] - eta[0]
 
@@ -460,10 +459,17 @@ class SpectrumOAM:
         Az = -A_theta * np.sin(theta)
 
         return np.array([Ax, Ay, Az, A_theta, A_phi], dtype=np.complex64)
+    
+    def wn(self, n, a0, delta, theta, w0=1, gamma=None, regime='plane'):
+        if regime == 'plane':
+            res = n*w0 / (1 + 0.5*a0**2*(1+delta**2)*np.sin(theta/2)**2)
+        if gamma is not None:
+            beta = np.sqrt(1 - 1/gamma**2)
+            res = gamma*res*(1 - beta*np.cos(theta)) / (2*gamma)
+        return res
         
-    def spec_harm_angular(self, Field, Traj, n_eta=100, n_t=100, n_padded=10, eta0=None,
-                          n_theta=250, theta_start=0.,
-                          phi=0., n_phi=100, over_phi=False,
+    def spec_harm_angular(self, n_theta=250, theta_start=0.,
+                          n_phi=100, over_phi=False,
                           n=1):
         #define all grids and other parameters
         theta_grid = np.linspace(theta_start, np.pi, n_theta)
@@ -473,14 +479,14 @@ class SpectrumOAM:
         w_grid = np.zeros(n_theta)
 
         #calculate trajectories
-        u_r, eta = self.create_traj(Field, Traj, n_eta)
+        # u_r, eta = self.create_traj(Field, Traj, n_eta)
 
         #for all angles calculate spectrum and A
         for i in range(n_theta):
             # wc = wn(n, Field.a0, Field.delta, theta_grid[i], pgp=Field.pgp)
-            wc = wn(n, Field.a0, Field.delta, theta_grid[i], regime='plane')
+            wc = self.wn(n, self.a0, self.delta, theta_grid[i], regime='plane')
             w_grid[i] = wc
             for j in range(n_phi):
-                A[:,i,j] = self.spec_harm(u_r, eta, wc, theta_grid[i], phi_grid[j])
+                A[:,i,j] = self.spec_harm(wc, theta_grid[i], phi_grid[j])
         
         return A, w_grid, theta_grid, phi_grid
