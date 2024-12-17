@@ -4,7 +4,7 @@ v.1.0: plane wave, no radiation reaction, no speed up
 '''
 
 import numpy as np
-from scipy import integrate
+from scipy.integrate import cumulative_trapezoid, trapezoid
 from scipy.interpolate import interp1d
 
 '''
@@ -57,9 +57,9 @@ class Trajectory:
         
         u = self.calc_u(A, eta, integrate_u=integrate_u)
         r = np.zeros_like(u)
-        r[0] = r0[0] + integrate.cumtrapz(u[0]/pi0, dx=d_eta, initial=0)
-        r[1] = r0[1] + integrate.cumtrapz(u[1]/pi0, dx=d_eta, initial=0)
-        r[2] = r0[2] + integrate.cumtrapz(u[2]/pi0, dx=d_eta, initial=0)
+        r[0] = r0[0] + cumulative_trapezoid(u[0]/pi0, dx=d_eta, initial=0)
+        r[1] = r0[1] + cumulative_trapezoid(u[1]/pi0, dx=d_eta, initial=0)
+        r[2] = r0[2] + cumulative_trapezoid(u[2]/pi0, dx=d_eta, initial=0)
         return u, r
     
 
@@ -109,7 +109,7 @@ class Spectrum:
             output.append(samples_padded)
         return output
     
-    def calc_spectrum_I_w(self, theta=np.pi, phi=0, n_t=100, n_padded=10):
+    def calc_spectrum_I_w(self, theta=np.pi, phi=0, n_t=100, n_padded=10, return_A=False):
         '''
         Calculate the Compton emission spectrum I(w) (FFT in the retarded time) at given angles 
         theta and phi
@@ -174,6 +174,16 @@ class Spectrum:
         # Components of intensity
         I_theta = Ix * np.cos(theta) * np.cos(phi) + Iy * np.cos(theta) * np.sin(phi) - Iz * np.sin(theta)
         I_phi = Ix * np.sin(phi) - Iy * np.cos(phi)
+
+        if return_A:
+            A_theta = - f / np.sqrt(2) * (-1j) * I_theta
+            A_fi = f / np.sqrt(2) * (-1j) * I_phi
+
+            A_x = A_theta * np.cos(theta) * np.cos(phi) - A_fi * np.sin(phi)
+            A_y = A_theta * np.cos(theta) * np.sin(phi) + A_fi * np.cos(phi)
+            A_z = -A_theta * np.sin(theta)
+            A_sph = [A_theta, A_fi]
+            A_cart = [A_x, A_y, A_z]
         
         A_theta = -f / np.sqrt(2) * I_theta
         A_phi = f / np.sqrt(2) * I_phi
@@ -183,7 +193,10 @@ class Spectrum:
         w = 2 * np.pi * f
         I = 2*(np.abs(A_theta)**2 + np.abs(A_phi)**2)
         
-        return I, w
+        if return_A:
+            return I, w, A_cart
+        else:
+            return I, w
     
     @staticmethod
     def interpolate_I_theta_w(I_theta_w_list, w_list, w_bound=[0.02, 3.]):
@@ -327,3 +340,147 @@ class Spectrum:
         dw = w[1] - w[0]
         n_photons = np.sum(I_w) * dw
         return n_photons
+
+
+class SpectrumOAM:
+    '''
+    Class to calculate emitted Compton spectrum from classic trajectories
+    To initialize one needs to provide
+    eta - time grid
+    u - vector part of 4-velocity (u_x, u_y, u_z)
+    r - coordinates (x, y, z)
+    '''
+    def __init__(self, eta, u, r):
+        self.eta = eta
+        self.u = u
+        self.r = r
+
+    def create_traj(self, get_A, Traj, n_eta, eta0=None):
+        #create the mesh over \eta
+        tau = Field.tau
+        if eta0 is None:
+            if Field.envelope_type == 'super gauss':
+                eta0 = int(tau * 1.2)
+            elif Field.envelope_type == 'rectangle':
+                eta0 = int(tau * 1.5)
+        n_eta = int(2 * eta0 * n_eta)
+        eta = np.linspace(-eta0, eta0, n_eta)
+
+        eta_b = 1.*tau
+        eta = np.linspace(-eta_b, eta_b, int(2*eta_b*100))
+        A = calc_A(eta)
+        u, r = traj.calc_u_x(A, eta)
+
+        return u, r, eta
+
+    def spec_I_w_theta(self, n_t=100, n_padded=10, 
+                    n_theta=250, theta_start=0.,
+                    phi=0, n_phi=100, over_phi=False,
+                    w_bound=[0.,3.], Lab_angle=False, gamma=None):
+        #grid over angle
+        theta_grid = np.linspace(theta_start, np.pi, n_theta)
+        if over_phi:
+            phi_grid = np.linspace(0, 2*np.pi, n_phi)
+
+        I_interp_list = []
+        
+        #calculating what w to plot
+        I, w = self.calc_spectrum_I_w(theta=theta_start, phi=0, n_t=n_t, n_padded=n_padded,
+                                      return_A=False)
+        
+        idx = (w > w_bound[0]) & (w < w_bound[1])
+        w_plot = w[idx]
+        I_2D = np.zeros((n_theta,len(w_plot)))
+        
+        if not over_phi:
+            for i,theta in enumerate(theta_grid):
+                I, w = self.calc_spectrum_I_w(theta=theta, phi=phi, n_t=n_t, 
+                                              n_padded=n_padded)
+                
+                I_interp = interp1d(w, I)
+                I_interp_list.append(I_interp)
+                I_2D[i,:] = I_interp(w_plot)
+            
+            return I_2D, w_plot, theta_grid, I_interp_list
+        
+        else:
+            I_2D = np.zeros((n_theta,n_phi,len(w_plot)))
+            A_2D = np.zeros((3,n_theta,n_phi,len(w_plot)), dtype=np.complex64)
+            if Lab_angle:
+                theta_grid_L = np.linspace(theta_start, np.pi, n_theta)
+                beta = np.sqrt(1. - 1. / gamma**2)
+                # theta_grid = np.zeros_like(theta_grid_L)
+                cos_theta = (np.cos(theta_grid_L) + beta) / (1 + beta*np.cos(theta_grid_L))
+                theta_grid = np.arccos(cos_theta)
+                print(theta_grid) 
+            for i,theta in enumerate(theta_grid):
+                for j,phi in enumerate(phi_grid):
+                    I, w, A = self.spec_I_w(theta=theta, phi=phi, n_t=n_t, 
+                                            n_padded=n_padded, return_A=True)
+                    I_interp = interp1d(w, I)
+                    for k in range(3):
+                        A_interp = interp1d(w, A[k])
+                        A_2D[k,i,j,:] = A_interp(w_plot)
+                    
+                    I_2D[i,j,:] = I_interp(w_plot)
+            
+            return I_2D, w_plot, theta_grid, phi_grid, A_2D
+        
+    def spec_harm(self, u_r, eta, w, theta, phi):
+        u_x_points = u_r[:,1]
+        u_y_points = u_r[:,2]
+        u_z_points = u_r[:,3]
+        
+        x_points = u_r[:,4]
+        y_points = u_r[:,5]
+        z_points = u_r[:,6]
+
+        d_eta = eta[1] - eta[0]
+
+        phase_eta = self.phase(eta, x_points, y_points, z_points, w, theta, phi)
+
+        Ix = u_x_points * np.exp(1j*phase_eta)
+        Iy = u_y_points * np.exp(1j*phase_eta)
+        Iz = u_z_points * np.exp(1j*phase_eta)
+
+        Ix = trapezoid(Ix, dx=d_eta)
+        Iy = trapezoid(Iy, dx=d_eta)
+        Iz = trapezoid(Iz, dx=d_eta)
+
+        I_theta = Ix*np.cos(theta)*np.cos(phi) + Iy*np.cos(theta)*np.sin(phi) - Iz*np.sin(theta)
+        I_phi = Ix*np.sin(phi) - Iy*np.cos(phi)
+
+        A_theta = - w / (2*np.pi*np.sqrt(2)) * (-1j) * I_theta
+        A_phi = w / (2*np.pi*np.sqrt(2)) * (-1j) * I_phi
+
+        I = 2 * (np.abs(A_theta)**2 + np.abs(A_phi)**2)
+
+        Ax = A_theta * np.cos(theta) * np.cos(phi) - A_phi * np.sin(phi)
+        Ay = A_theta * np.cos(theta) * np.sin(phi) + A_phi * np.cos(phi)
+        Az = -A_theta * np.sin(theta)
+
+        return np.array([Ax, Ay, Az, A_theta, A_phi], dtype=np.complex64)
+        
+    def spec_harm_angular(self, Field, Traj, n_eta=100, n_t=100, n_padded=10, eta0=None,
+                          n_theta=250, theta_start=0.,
+                          phi=0., n_phi=100, over_phi=False,
+                          n=1):
+        #define all grids and other parameters
+        theta_grid = np.linspace(theta_start, np.pi, n_theta)
+        if over_phi:
+            phi_grid = np.linspace(0, 2*np.pi, n_phi)
+        A = np.zeros((5, n_theta, n_phi), dtype=np.complex64)
+        w_grid = np.zeros(n_theta)
+
+        #calculate trajectories
+        u_r, eta = self.create_traj(Field, Traj, n_eta)
+
+        #for all angles calculate spectrum and A
+        for i in range(n_theta):
+            # wc = wn(n, Field.a0, Field.delta, theta_grid[i], pgp=Field.pgp)
+            wc = wn(n, Field.a0, Field.delta, theta_grid[i], regime='plane')
+            w_grid[i] = wc
+            for j in range(n_phi):
+                A[:,i,j] = self.spec_harm(u_r, eta, wc, theta_grid[i], phi_grid[j])
+        
+        return A, w_grid, theta_grid, phi_grid
